@@ -1,0 +1,37 @@
+name: Monthly BLS Update
+
+on:
+  schedule:
+    - cron: "0 0 1 * *"   # Run on the 1st of every month at midnight UTC
+  workflow_dispatch:      # Allow manual runs from GitHub
+
+jobs:
+  update-data:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run data fetch script
+        run: python datafetch.py
+
+      - name: Commit updated data
+        run: |
+          git config --local user.email "actions@github.com"
+          git config --local user.name "GitHub Actions"
+          git add data/bls_data.csv
+          git commit -m "Automated monthly BLS data update" || echo "No changes to commit"
+
+      - name: Push changes
+        uses: ad-m/github-push-action@v0.8.0
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}

@@ -12,11 +12,10 @@ st.set_page_config(
 )
 
 # -----------------------------------------------------------
-# Loading of the BLS dataset
+# Load data
 # -----------------------------------------------------------
 DATA_PATH = Path("data") / "bls_data.csv"
 
-# Human-readable labels for each series in the CSV
 SERIES_LABELS = {
     "nonfarm_employment": "Nonfarm Employment (Thousands)",
     "unemployment_rate": "Unemployment Rate (%)",
@@ -25,12 +24,14 @@ SERIES_LABELS = {
     "avg_weekly_hours": "Average Weekly Hours",
 }
 
+# Plotly default blue (same “normal” blue most Plotly charts use)
+DEFAULT_LINE_COLOR = "#1f77b4"
+
 
 @st.cache_data
 def load_data() -> pd.DataFrame:
     df = pd.read_csv(DATA_PATH, parse_dates=["date"])
     df = df.sort_values("date")
-    # Attaching readable names for plotting and sidebar
     df["series_name"] = df["series"].map(SERIES_LABELS).fillna(df["series"])
     return df
 
@@ -38,18 +39,78 @@ def load_data() -> pd.DataFrame:
 df = load_data()
 
 # -----------------------------------------------------------
+# Sidebar: Year range + Download data
+# -----------------------------------------------------------
+st.sidebar.header("Filters")
+
+start_year = int(df["date"].dt.year.min())
+end_year = int(df["date"].dt.year.max())
+
+if start_year == end_year:
+    year_range = (start_year, end_year)
+    st.sidebar.write(f"Only data for {start_year} is available.")
+else:
+    year_range = st.sidebar.slider(
+        "Year range:",
+        min_value=start_year,
+        max_value=end_year,
+        value=(start_year, end_year),
+    )
+
+# Download (all data, well cleaned & filtered)
+with st.sidebar.expander("Download data", expanded=False):
+
+    # Convert long -> wide so each series becomes its own column
+    wide = (
+        df.pivot(index="date", columns="series", values="value")
+          .reset_index()
+          .sort_values("date")
+    )
+
+    # Renameing of column name 
+    wide = wide.rename(columns={
+        "date": "Date",
+        "avg_hourly_earnings": "Average Hourly Earnings ($)",
+        "avg_weekly_hours": "Average Weekly Hours",
+        "labor_force_participation": "Labor Force Participation Rate (%)",
+        "nonfarm_employment": "Nonfarm Employment (Thousands)",
+        "unemployment_rate": "Unemployment Rate (%)",
+    })
+
+    # Keeping only the columns I want, in the exact order
+    wide = wide[
+        [
+            "Date",
+            "Average Hourly Earnings ($)",
+            "Average Weekly Hours",
+            "Labor Force Participation Rate (%)",
+            "Nonfarm Employment (Thousands)",
+            "Unemployment Rate (%)",
+        ]
+    ]
+
+    csv_all = wide.to_csv(index=False).encode("utf-8")
+
+    st.download_button(
+        label="Download clean dataset (CSV)",
+        data=csv_all,
+        file_name="bls_data_clean.csv",
+        mime="text/csv"
+    )
+
+# Filtered df for plotting (by year range only)
+plot_df = df[
+    (df["date"].dt.year >= year_range[0]) &
+    (df["date"].dt.year <= year_range[1])
+].copy()
+
+# -----------------------------------------------------------
 # Header
 # -----------------------------------------------------------
 st.title("📊 U.S. Labor Statistics Dashboard")
-
-st.markdown(
-    """
-    <p style='font-size:16px; color:#333;'>
-        Monthly data from the U.S. Bureau of Labor Statistics: employment,
-        unemployment, labor force participation, wages, and hours since January 2020.
-    </p>
-    """,
-    unsafe_allow_html=True
+st.write(
+    "Monthly data from the U.S. Bureau of Labor Statistics (BLS): employment, unemployment, "
+    "labor force participation, wages, and hours since January 2020."
 )
 
 last_date = df["date"].max()
@@ -62,177 +123,144 @@ latest = df[df["date"] == last_date]
 
 
 def latest_value(series_key: str):
-    """Get latest value for a given internal series name, e.g. 'unemployment_rate'."""
     row = latest[latest["series"] == series_key]
     if row.empty:
         return None
     return float(row["value"].iloc[0])
 
 
-col1, col2, col3 = st.columns(3)
+m1, m2, m3 = st.columns(3)
 
-with col1:
-    nf = latest_value("nonfarm_employment")
-    if nf is not None:
-        st.metric(
-            "Nonfarm Employment (Thousands)",
-            f"{nf:,.0f}",
-        )
+with m1:
+    v = latest_value("nonfarm_employment")
+    if v is not None:
+        st.metric("Nonfarm Employment (Thousands)", f"{v:,.0f}")
 
-with col2:
-    ur = latest_value("unemployment_rate")
-    if ur is not None:
-        st.metric(
-            "Unemployment Rate (%)",
-            f"{ur:.1f}",
-        )
+with m2:
+    v = latest_value("unemployment_rate")
+    if v is not None:
+        st.metric("Unemployment Rate (%)", f"{v:.1f}")
 
-with col3:
-    lfp = latest_value("labor_force_participation")
-    if lfp is not None:
-        st.metric(
-            "Labor Force Participation Rate (%)",
-            f"{lfp:.1f}",
-        )
+with m3:
+    v = latest_value("labor_force_participation")
+    if v is not None:
+        st.metric("Labor Force Participation Rate (%)", f"{v:.1f}")
+
+st.divider()
 
 # -----------------------------------------------------------
-# Sidebar filters
+# Single-series line chart
 # -----------------------------------------------------------
-st.sidebar.header("Filters")
+def make_line_chart(df_in: pd.DataFrame, series_key: str, title: str, y_label: str = ""):
+    d = df_in[df_in["series"] == series_key].copy()
+    if d.empty:
+        st.info(f"No data available for {SERIES_LABELS.get(series_key, series_key)} in this year range.")
+        return
 
-# Build mapping series_key -> pretty label from the DataFrame
-series_names = (
-    df[["series", "series_name"]]
-    .drop_duplicates()
-    .set_index("series")["series_name"]
-    .to_dict()
-)
-
-all_series = list(series_names.keys())
-
-# Default selection: just nonfarm employment
-default_series = ["nonfarm_employment"]
-
-# ---- initialise session_state BEFORE widgets ----
-if "series_select" not in st.session_state:
-    st.session_state.series_select = [
-        s for s in default_series if s in series_names
-    ]
-
-# ---- button callbacks ----
-def select_all():
-    st.session_state.series_select = all_series
-
-def clear_all():
-    st.session_state.series_select = []
-
-# ---- buttons: Select all / Clear all ----
-btn_col1, btn_col2 = st.sidebar.columns(2)
-with btn_col1:
-    st.sidebar.button("Select all", on_click=select_all)
-with btn_col2:
-    st.sidebar.button("Clear all", on_click=clear_all)
-
-# ---- multiselect uses the session_state key ----
-selected_series = st.sidebar.multiselect(
-    "Choose series to plot:",
-    options=all_series,
-    format_func=lambda x: series_names.get(x, x),
-    key="series_select",
-)
-
-# ---- year slider and filtering ----
-start_year = int(df["date"].dt.year.min())
-end_year = int(df["date"].dt.year.max())
-
-if start_year == end_year:
-    st.sidebar.write(f"Only data for {start_year} is available.")
-    year_range = (start_year, end_year)
-else:
-    year_range = st.sidebar.slider(
-        "Year range:",
-        min_value=start_year,
-        max_value=end_year,
-        value=(max(start_year, end_year - 5), end_year),
-    )
-
-mask = (
-    (df["date"].dt.year >= year_range[0])
-    & (df["date"].dt.year <= year_range[1])
-)
-
-if selected_series:
-    mask &= df["series"].isin(selected_series)
-
-plot_df = df[mask]
-
-# -----------------------------------------------------------
-# Main chart
-# -----------------------------------------------------------
-st.subheader("Trends over time (2020–Present)")
-
-if plot_df.empty:
-    st.info("No data available for this combination of filters.")
-else:
-    # Build the chart title based on selected series
-    if selected_series:
-        readable_names = [series_names[s] for s in selected_series]
-        title_text = ", ".join(readable_names)  # only the series names
-    else:
-        title_text = "Trends over time"
-
-    # Create Plotly chart
     fig = px.line(
-        plot_df,
+        d,
         x="date",
         y="value",
-        color="series_name",
-        markers=True,
-        title=title_text,
-        labels={
-            "date": "",
-            "value": "",
-            "series_name": "Series",
-        },
+        title=title,
+        labels={"date": "Date", "value": y_label},
     )
 
-    # Thicker lines + nicer markers
-    fig.update_traces(line=dict(width=3), marker=dict(size=6))
+    # Clean line style (no markers), same “normal blue”
+    fig.update_traces(
+        line=dict(width=3, color=DEFAULT_LINE_COLOR),
+        mode="lines"
+    )
 
-    # Layout: taller chart, unified hover, nice margins
+    # Remove extra “box feel”, keep it clean
     fig.update_layout(
-        height=550,
-        title_font_size=22,
-        legend_title_text="Series",
+        template="plotly_white",
+        height=450,
+        showlegend=False,
+        margin=dict(l=50, r=30, t=70, b=45),
         hovermode="x unified",
-        margin=dict(l=60, r=40, t=80, b=60),
-        plot_bgcolor="#ffffff",
-        paper_bgcolor="#ffffff",
-    )
-
-    # Adding a light rectangular border around the whole figure (chart + legend)
-    fig.add_shape(
-        type="rect",
-        xref="paper",
-        yref="paper",
-        x0=0,
-        y0=0,
-        x1=1,
-        y1=1,
-        line=dict(color="#DDDDDD", width=1),
-        fillcolor="rgba(250, 250, 250, 0.0)",
-        layer="below",
     )
 
     st.plotly_chart(fig, use_container_width=True)
 
-# -----------------------------------------------------------
-# Data table
-# -----------------------------------------------------------
-st.subheader("Data Table")
 
-st.dataframe(
-    plot_df.sort_values(["date", "series"]),
-    use_container_width=True,
-    height=400,
-)
+# -----------------------------------------------------------
+# Tabs / Pages
+# -----------------------------------------------------------
+tab1, tab2, tab3 = st.tabs([
+    "Employment Level & Status",
+    "Wages & Hours",
+    "Labor Utilization"
+])
+
+# --- TAB 1: Employment Level & Status (2 separate charts)
+with tab1:
+    st.subheader("Employment Level & Status")
+    c1, c2 = st.columns(2)
+
+    with c1:
+        make_line_chart(
+            plot_df,
+            "nonfarm_employment",
+            "Nonfarm Employment (Thousands)",
+            y_label="Employment (Thousands)"
+        )
+
+    with c2:
+        make_line_chart(
+            plot_df,
+            "unemployment_rate",
+            "Unemployment Rate (%)",
+            y_label="Unemployment Rate (%)"
+        )
+
+# --- TAB 2: Wages & Hours (2 separate charts)
+with tab2:
+    st.subheader("Wages & Hours")
+    c1, c2 = st.columns(2)
+
+    with c1:
+        make_line_chart(
+            plot_df,
+            "avg_hourly_earnings",
+            "Average Hourly Earnings ($)",
+            y_label="Dollars ($)"
+        )
+
+    with c2:
+        make_line_chart(
+            plot_df,
+            "avg_weekly_hours",
+            "Average Weekly Hours",
+            y_label="Hours"
+        )
+
+# --- TAB 3: Labor Utilization (1 chart + note beside it)
+with tab3:
+    st.subheader("Labor Utilization")
+
+    left, right = st.columns([2, 1])
+
+    with left:
+        make_line_chart(
+            plot_df,
+            "labor_force_participation",
+            "Labor Force Participation Rate (%)",
+            y_label="Percent (%)"
+        )
+
+    with right:
+        st.markdown(
+            """
+            **What this means (simple explanation):**  
+            The **Labor Force Participation Rate (LFPR)** is the share of the working-age population
+            that is either **working** or **actively looking for work**.
+
+            - If LFPR rises: more people are entering the labor market.  
+            - If LFPR falls: more people are staying out of the labor market (for example, school,
+              retirement, discouragement, caregiving, etc.).  
+            """
+        )
+
+
+
+

@@ -344,3 +344,11 @@ date,series,value
 2025-09-01,labor_force_participation,62.4
 2025-09-01,nonfarm_employment,159626.0
 2025-09-01,unemployment_rate,4.4
+2025-10-01,avg_hourly_earnings,36.81
+2025-10-01,avg_weekly_hours,34.2
+2025-10-01,nonfarm_employment,159488.0
+2025-11-01,avg_hourly_earnings,36.86
+2025-11-01,avg_weekly_hours,34.3
+2025-11-01,labor_force_participation,62.5
+2025-11-01,nonfarm_employment,159552.0
+2025-11-01,unemployment_rate,4.6
